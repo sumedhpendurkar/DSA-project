@@ -1700,6 +1700,9 @@ int do_input(bool allow_funcs)
 	    preserve = TRUE;
 
 #ifndef NANO_TINY
+	if (s->scfunc != complete_a_word)
+	    pletion_line = NULL;
+
 	if (s->scfunc == do_toggle_void) {
 	    do_toggle(s->toggle);
 	    if (s->toggle != CUT_TO_END)
