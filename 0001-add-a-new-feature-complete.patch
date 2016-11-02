@@ -1,0 +1,298 @@
+From 9572346ed47a0e0e0b82b53cb674ed208804c8ce Mon Sep 17 00:00:00 2001
+From: "sumedh.pendurkar" <sumedh.pendurkar@gmail.com>
+Date: Tue, 1 Nov 2016 01:47:54 +0530
+Subject: [PATCH 1/2] add a new feature : complete
+
+---
+ src/global.c |   8 +++
+ src/nano.c   |   3 +
+ src/nano.h   |   5 ++
+ src/proto.h  |   3 +
+ src/text.c   | 176 +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ 5 files changed, 195 insertions(+)
+
+diff --git a/src/global.c b/src/global.c
+index dd2e71a..6ccbec9 100644
+--- a/src/global.c
++++ b/src/global.c
+@@ -59,6 +59,9 @@ int last_line_y;
+ message_type lastmessage = HUSH;
+ 	/* Messages of type HUSH should not overwrite type MILD nor ALERT. */
+ 
++filestruct *pletion_line = NULL;
++	/* The line where the last completion was found, if any. */
++
+ int controlleft, controlright, controlup, controldown;
+ #ifndef NANO_TINY
+ int shiftcontrolleft, shiftcontrolright, shiftcontrolup, shiftcontroldown;
+@@ -536,6 +539,7 @@ void shortcut_init(void)
+ #endif
+     const char *nano_undo_msg = N_("Undo the last operation");
+     const char *nano_redo_msg = N_("Redo the last undone operation");
++    const char *nano_completion_msg = N_("Try and complete the current word");
+ #endif
+     const char *nano_back_msg = N_("Go back one character");
+     const char *nano_forward_msg = N_("Go forward one character");
+@@ -813,6 +817,9 @@ void shortcut_init(void)
+ 	N_("Undo"), IFSCHELP(nano_undo_msg), TOGETHER, NOVIEW);
+     add_to_funcs(do_redo, MMAIN,
+ 	N_("Redo"), IFSCHELP(nano_redo_msg), BLANKAFTER, NOVIEW);
++
++    add_to_funcs(complete_a_word, MMAIN,
++	N_("Complete"), IFSCHELP(nano_completion_msg), BLANKAFTER, NOVIEW);
+ #endif /* !NANO_TINY */
+ 
+     add_to_funcs(do_left, MMAIN,
+@@ -1095,6 +1102,7 @@ void shortcut_init(void)
+     add_to_sclist(MMAIN, "M-{", 0, do_unindent, 0);
+     add_to_sclist(MMAIN, "M-U", 0, do_undo, 0);
+     add_to_sclist(MMAIN, "M-E", 0, do_redo, 0);
++    add_to_sclist(MMAIN, "^]", 0, complete_a_word, 0);
+ #endif
+ #ifdef ENABLE_COMMENT
+     add_to_sclist(MMAIN, "M-3", 0, do_comment, 0);
+diff --git a/src/nano.c b/src/nano.c
+index c975112..d6d4aeb 100644
+--- a/src/nano.c
++++ b/src/nano.c
+@@ -1700,6 +1700,9 @@ int do_input(bool allow_funcs)
+ 	    preserve = TRUE;
+ 
+ #ifndef NANO_TINY
++	if (s->scfunc != complete_a_word)
++	    pletion_line = NULL;
++
+ 	if (s->scfunc == do_toggle_void) {
+ 	    do_toggle(s->toggle);
+ 	    if (s->toggle != CUT_TO_END)
+diff --git a/src/nano.h b/src/nano.h
+index 93ec5e1..08d3b21 100644
+--- a/src/nano.h
++++ b/src/nano.h
+@@ -484,6 +484,11 @@ typedef struct subnfunc {
+ 	/* Next item in the list. */
+ } subnfunc;
+ 
++typedef struct completion_word {
++    char *word;
++    struct completion_word *next;
++} completion_word;
++
+ /* The elements of the interface that can be colored differently. */
+ enum
+ {
+diff --git a/src/proto.h b/src/proto.h
+index 4222a32..68032db 100644
+--- a/src/proto.h
++++ b/src/proto.h
+@@ -47,6 +47,8 @@ extern int last_line_y;
+ 
+ extern message_type lastmessage;
+ 
++extern filestruct *pletion_line;
++
+ extern int controlleft;
+ extern int controlright;
+ extern int controlup;
+@@ -658,6 +660,7 @@ void do_formatter(void);
+ void do_wordlinechar_count(void);
+ #endif
+ void do_verbatim_input(void);
++void complete_a_word(void);
+ 
+ /* All functions in utils.c. */
+ void get_homedir(void);
+diff --git a/src/text.c b/src/text.c
+index ca77709..94cef52 100644
+--- a/src/text.c
++++ b/src/text.c
+@@ -48,6 +48,13 @@ static filestruct *jusbottom = NULL;
+ 	/* A pointer to the end of the buffer with unjustified text. */
+ #endif
+ 
++static int pletion_x = 0;
++	/* The x position in pletion_line of the last found completion. */
++static int pleted_length = 0;
++	/* The number of characters added in the last completion. */
++static completion_word *list_of_completions;
++	/* A linked list of the words that are possible completions. */
++
+ #ifndef NANO_TINY
+ /* Toggle the mark. */
+ void do_mark(void)
+@@ -3684,3 +3691,172 @@ void do_verbatim_input(void)
+ 
+     free(output);
+ }
++
++/* Copy the found completion candidate. */
++char *copy_completion(char *check_line, int start)
++{
++    char *word;
++    int i = start, j = 0, pos_mbchar = 0;
++    int len_of_word = 0;
++
++    /* Calculate the length of word by travelling till end of word*/
++    while (is_word_mbchar(&check_line[i], FALSE)) {
++	pos_mbchar = move_mbright(check_line, i);
++	len_of_word += pos_mbchar - i;
++	i = pos_mbchar;
++    }
++    word = (char *)nmalloc((len_of_word + 1) * sizeof(char));
++
++    i = start;
++
++    /* Simply copy the word */
++    while (j < len_of_word)
++	word[j++] = check_line[i++];
++
++    word[j] = '\0';
++    return word;
++}
++
++/* Look at the fragment the user has typed, then search the current buffer for
++ * the first word that starts with this fragment, and tentatively complete the
++ * fragment.  If the user types 'Complete' again, search and paste the next
++ * possible completion. */
++void complete_a_word(void)
++{
++    char *shard, *completion = NULL;
++    int to_find_start_pos, shard_length = 0;
++    int i = 0, j = 0;
++    completion_word *some_word;
++
++    /* If this is a fresh completion attempt... */
++    if (pletion_line == NULL) {
++	/* Clear the list of words of a previous completion run. */
++	while (list_of_completions != NULL) {
++	    completion_word *dropit = list_of_completions;
++	    list_of_completions = list_of_completions->next;
++	    free(dropit->word);
++	    free(dropit);
++	}
++
++	/* Prevent a completion from being merged with typed text. */
++	openfile->last_action = OTHER;
++
++	/* Initialize the starting point for searching. */
++	pletion_line = openfile->fileage;
++	pletion_x = 0;
++
++	/* Wipe the "No further matches" message. */
++	blank_statusbar();
++	wnoutrefresh(bottomwin);
++    } else {
++	/* Remove the earlier completion from the buffer. */
++	openfile->current_x -= pleted_length;
++	int line_len = strlen(openfile->current->data + openfile->current_x);
++	charmove(&openfile->current->data[openfile->current_x],
++	    &openfile->current->data[openfile->current_x + pleted_length],
++	    line_len - pleted_length + 1);
++
++	/* Pop the last undo item off the stack, because the completion
++	 * suggestion should not be remembered. */
++	discard_until(openfile->current_undo->next, openfile);
++	openfile->current_undo = openfile->undotop;
++    }
++
++    to_find_start_pos = openfile->current_x;
++    /* Intializing iterator some_word to the head of the list of previous searches if any */
++    some_word = list_of_completions;
++
++    /* Find the start of the fragment that the user typed. */
++    to_find_start_pos = move_mbleft(openfile->current->data, to_find_start_pos);
++    while (to_find_start_pos > 0) {
++	if (!is_word_mbchar(&openfile->current->data[to_find_start_pos], FALSE)) {
++	    to_find_start_pos++;
++	    break;
++	}
++	to_find_start_pos = move_mbleft(openfile->current->data, to_find_start_pos);
++    }
++
++    /* If there is no word fragment before the cursor, do nothing. */
++    if (to_find_start_pos == openfile->current_x) {
++	pletion_line = NULL;
++	return;
++    }
++
++    shard = (char *)nmalloc((openfile->current_x - to_find_start_pos + 1) * sizeof(char));
++
++    /* Copy the fragment that has to be searched for. */
++    while (to_find_start_pos < openfile->current_x)
++	shard[shard_length++] = openfile->current->data[to_find_start_pos++];
++    shard[shard_length] = '\0';
++
++    /* Search the fragment in the file. */
++    while (pletion_line != NULL) {
++	int line_length = strlen(pletion_line->data);
++
++	/* Search in the pletion_line if match exists
++	 * This loop is used for traversing in the pletion_line */
++	for (i = pletion_x; i + shard_length < line_length; i++) {
++	    /* Ignore the fragment itself. */
++	    if (pletion_line == openfile->current && i == openfile->current_x - shard_length)
++		continue;
++
++	    /* Check if the first byte of shard finds a match
++	     * Also check the character to left of the match is not a word forming character */
++	    if (shard[0] == pletion_line->data[i] && (i == 0 ||
++		!is_word_mbchar(&pletion_line->data[move_mbleft(pletion_line->data, i)], FALSE))) {
++
++		/* Now check for the rest bytes of shard */
++		for(j = 1; j < shard_length; j++)
++		    if(shard[j] != pletion_line->data[i + j])
++			break;
++
++		/* If we have travelled whole shard and the matched word is not same as shard */
++		if (j == shard_length && (i + j < line_length &&
++		    is_word_mbchar(&pletion_line->data[i + j], FALSE))) {
++
++		    /* We have found a match; copy it */
++		    completion = copy_completion(pletion_line->data, i++);
++
++		    /* Look in the past completions for a duplicate. */
++		    while (some_word && strcmp(completion, some_word->word) != 0)
++			some_word = some_word->next;
++
++		    /* If we've already seen this word, skip it. */
++		    if (some_word != NULL) {
++			some_word = list_of_completions;
++			free(completion);
++			continue;
++		    }
++
++		    /* Add the word to the list of completions. */
++		    some_word = (completion_word *)nmalloc(sizeof(completion_word));
++		    some_word->word = completion;
++		    some_word->next = list_of_completions;
++		    list_of_completions = some_word;
++
++		    /* Inject the completion into the buffer. */
++		    pleted_length = strlen(completion) - shard_length;
++		    do_output(&some_word->word[shard_length], pleted_length, FALSE);
++		    pletion_x = i;
++
++		    free(shard);
++		    return;
++		}
++	    }
++	}
++
++	pletion_line = pletion_line->next;
++	pletion_x = 0;
++    }
++
++    /* Reached the end of the file */
++    if (pletion_line == NULL) {
++	if (list_of_completions != NULL) {
++	    statusline(HUSH, "No further matches");
++	    refresh_needed = TRUE;
++	} else
++	    statusline(ALERT, "No matches");
++    }
++
++    free(shard);
++}
+-- 
+2.7.4
+

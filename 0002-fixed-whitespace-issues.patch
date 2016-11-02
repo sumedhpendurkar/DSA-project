@@ -1,0 +1,27 @@
+From bc1cda1896d6487b44a08f5e3eb300de4554d7c9 Mon Sep 17 00:00:00 2001
+From: "sumedh.pendurkar" <sumedh.pendurkar@gmail.com>
+Date: Tue, 1 Nov 2016 02:11:36 +0530
+Subject: [PATCH 2/2] fixed whitespace issues
+
+---
+ src/text.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/src/text.c b/src/text.c
+index 94cef52..71d8685 100644
+--- a/src/text.c
++++ b/src/text.c
+@@ -3806,8 +3806,8 @@ void complete_a_word(void)
+ 		!is_word_mbchar(&pletion_line->data[move_mbleft(pletion_line->data, i)], FALSE))) {
+ 
+ 		/* Now check for the rest bytes of shard */
+-		for(j = 1; j < shard_length; j++)
+-		    if(shard[j] != pletion_line->data[i + j])
++		for (j = 1; j < shard_length; j++)
++		    if (shard[j] != pletion_line->data[i + j])
+ 			break;
+ 
+ 		/* If we have travelled whole shard and the matched word is not same as shard */
+-- 
+2.7.4
+
